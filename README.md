@@ -75,6 +75,17 @@ const csrf = try server.middleware(Csrf, .{
 });
 ```
 
+## Client flow
+
+The middleware requires a valid CSRF cookie **before** it will accept a state-changing request. On the first GET, the middleware sets the cookie and the `X-CSRF-Token` response header. The client must include this token on subsequent POST/PUT/PATCH/DELETE requests — either via the `x-csrf-token` header or a `_csrf` form field.
+
+A POST without a prior GET will always receive a 403. This is by design: the client has no cookie yet, so no token can match. The expected integration pattern is:
+
+1. **GET** the page/form — middleware sets the cookie and response header.
+2. **POST** with the token — middleware validates and passes through.
+
+For SPAs using `fetch`, read the `X-CSRF-Token` response header and send it back on mutations. For HTML forms, render the token into a hidden `<input name="_csrf">` field.
+
 ## Design
 
 See [DESIGN.md](DESIGN.md) for architecture and principles:

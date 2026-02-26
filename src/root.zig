@@ -51,9 +51,13 @@ pub const Config = struct {
 
 config: Config,
 
-/// Initialise the middleware. Validates the secret length.
+/// Initialise the middleware. Validates configuration.
 pub fn init(config: Config, _: httpz.MiddlewareConfig) !@This() {
     if (config.secret.len < 32) return error.SecretTooShort;
+    if (std.mem.startsWith(u8, config.cookie_name, "__Host-")) {
+        if (!config.secure) return error.HostPrefixRequiresSecure;
+        if (!std.mem.eql(u8, config.cookie_path, "/")) return error.HostPrefixRequiresRootPath;
+    }
     return .{ .config = config };
 }
 
@@ -76,7 +80,7 @@ pub fn execute(self: *const @This(), req: *httpz.Request, res: *httpz.Response, 
     const cookie_token = token orelse return self.reject(res);
 
     // 5. Extract submitted token from header (fallback: form field).
-    const submitted_token = self.extractSubmittedToken(req) orelse return self.reject(res);
+    const submitted_token = (try self.extractSubmittedToken(req)) orelse return self.reject(res);
 
     // 6. Compare tokens (constant-time, fixed-size).
     if (!tokensEqual(cookie_token, submitted_token)) return self.reject(res);
@@ -127,14 +131,17 @@ fn isSafeMethod(self: *const @This(), method: httpz.Method) bool {
     };
 }
 
-fn extractSubmittedToken(self: *const @This(), req: *httpz.Request) ?[]const u8 {
+fn extractSubmittedToken(self: *const @This(), req: *httpz.Request) !?[]const u8 {
     if (req.header(self.config.header_name)) |token| return token;
     if (self.config.form_field.len > 0) {
-        if (req.param(self.config.form_field)) |token| return token;
+        const fd = try req.formData();
+        if (fd.get(self.config.form_field)) |token| return token;
     }
     return null;
 }
 
+/// Reject the request. Sets status and body, does NOT call executor.next().
+/// Returns void — callers use `return self.reject(res)` to exit execute().
 fn reject(self: *const @This(), res: *httpz.Response) void {
     res.status = self.config.reject_status;
     res.body = self.config.reject_body;
@@ -278,6 +285,39 @@ fn testInstance() @This() {
     return .{ .config = .{ .secret = test_secret } };
 }
 
+// -- init validation ---------------------------------------------------------
+
+const dummy_mc: httpz.MiddlewareConfig = .{ .arena = undefined, .allocator = undefined };
+
+test "init: rejects secret shorter than 32 bytes" {
+    try testing.expectError(error.SecretTooShort, @This().init(.{ .secret = "too-short" }, dummy_mc));
+}
+
+test "init: rejects __Host- with secure=false" {
+    try testing.expectError(error.HostPrefixRequiresSecure, @This().init(.{
+        .secret = test_secret,
+        .cookie_name = "__Host-csrf",
+        .secure = false,
+    }, dummy_mc));
+}
+
+test "init: rejects __Host- with non-root path" {
+    try testing.expectError(error.HostPrefixRequiresRootPath, @This().init(.{
+        .secret = test_secret,
+        .cookie_name = "__Host-csrf",
+        .cookie_path = "/api",
+    }, dummy_mc));
+}
+
+test "init: allows non-__Host- cookie without Secure" {
+    const mw = try @This().init(.{
+        .secret = test_secret,
+        .cookie_name = "csrf",
+        .secure = false,
+    }, dummy_mc);
+    try testing.expectEqualStrings("csrf", mw.config.cookie_name);
+}
+
 // -- generateToken -----------------------------------------------------------
 
 test "generateToken: produces 87-char token with delimiter" {
@@ -391,6 +431,10 @@ test "parseCookieValue: whitespace handling" {
 
 fn initHt() httpz.testing.Testing {
     return httpz.testing.init(.{});
+}
+
+fn initHtWithForm() httpz.testing.Testing {
+    return httpz.testing.init(.{ .request = .{ .max_form_count = 8 } });
 }
 
 const NoopExecutor = struct {
@@ -554,6 +598,31 @@ test "middleware: OPTIONS passes without token" {
     defer ht.deinit();
     ht.req.method = .OPTIONS;
     ht.url("/submit");
+
+    var exec = NoopExecutor{};
+    try mw.execute(ht.req, ht.res, &exec);
+
+    try testing.expect(exec.called);
+}
+
+test "middleware: POST with form field fallback passes" {
+    const mw = testInstance();
+    const token = mw.generateToken();
+
+    var ht = initHtWithForm();
+    defer ht.deinit();
+    ht.req.method = .POST;
+    ht.url("/submit");
+    ht.header("cookie", "__Host-csrf=" ++ &token);
+    // No x-csrf-token header — use form body instead.
+    // Build body manually: ht.form() percent-encodes field names so "_csrf"
+    // becomes "%5Fcsrf" which httpz then un-escapes back — but that round-trip
+    // requires spare buffer space that the test harness may not have. Directly
+    // setting the body avoids this and tests the real form-data code path.
+    const body_str: []const u8 = "_csrf=" ++ token;
+    const body_mut = try ht.arena.dupe(u8, body_str);
+    ht.req.body_buffer = .{ .type = .static, .data = body_mut };
+    ht.req.body_len = body_mut.len;
 
     var exec = NoopExecutor{};
     try mw.execute(ht.req, ht.res, &exec);
