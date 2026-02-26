@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] — 2026-02-25
+
+### Fixes
+
+- Use `formData().get()` instead of `param()` for form field token extraction — `param()` reads URL route parameters, not POST body fields, so every form-based CSRF submission was silently rejected
+
+### Other
+
+- Validate `__Host-` cookie prefix invariants at init (`Secure=true`, `Path=/`)
+- Document expected client flow (GET first, then POST) in README
+- Add form field fallback and config validation tests
+
 ## [0.1.0] — 2026-02-25
 
 ### Features

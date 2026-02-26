@@ -1,6 +1,6 @@
 .{
     .name = .httpz_csrf,
-    .version = "0.1.0",
+    .version = "0.1.1",
     .fingerprint = 0x9e81d62a44cb4a67,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
