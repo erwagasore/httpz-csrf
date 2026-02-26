@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] — 2026-02-25
+
+### Fixes
+
+- Use `req.formData()` instead of `req.query()` in example POST handler — query reads URL params, not form body
+- Use httpz native `res.setCookie()` API instead of manual header formatting — properly propagates allocation errors
+- Unsafe methods without a cookie now reject immediately without generating a token — no wasted arena allocation or misleading `Set-Cookie` on 403 responses
+
+### Other
+
+- Make `parseCookieValue` private (internal use only)
+- Remove unused `self` parameter from `validateOrigin`
+- Remove unused `encoded_sig_len` constant
+- Fix API names in DESIGN.md (`timing_safe.eql` not `timingSafeEql`)
+- Pin dependency snippet in README to release tag instead of `#main`
+- Add tests for `safe_custom` config, origin validation integration, and no `Set-Cookie` on rejected requests (37 → 41 tests)
+
 ## [0.1.1] — 2026-02-25
 
 ### Fixes
