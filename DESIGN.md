@@ -263,43 +263,43 @@ No external dependencies beyond httpz. All crypto is Zig stdlib.
 
 ### Phase 1 — Scaffold
 
-- [ ] `build.zig.zon` — package manifest with httpz dependency
-- [ ] `build.zig` — module, example executable, test step
-- [ ] `src/root.zig` — empty struct with `Config`, `init` (validate secret ≥ 32 bytes), `deinit` (no-op)
-- [ ] Verify `zig build` compiles
+- [x] `build.zig.zon` — package manifest with httpz dependency
+- [x] `build.zig` — module, example executable, test step
+- [x] `src/root.zig` — empty struct with `Config`, `init` (validate secret ≥ 32 bytes), `deinit` (no-op)
+- [x] Verify `zig build` compiles
 
 ### Phase 2 — Token
 
-- [ ] `generateToken` — 32 random bytes → HMAC-SHA256 → base64url nonce + "." + base64url signature → `[87]u8`
-- [ ] `verifyToken` — split on ".", decode both halves, recompute HMAC, compare with `timingSafeEql`
-- [ ] `tokensEqual` — assert both are 87 bytes, compare with `timingSafeEql`
-- [ ] Tests: round-trip generate→verify, tampered nonce rejected, tampered signature rejected, wrong secret rejected, truncated rejected, empty rejected, missing delimiter rejected
+- [x] `generateToken` — 32 random bytes → HMAC-SHA256 → base64url nonce + "." + base64url signature → `[87]u8`
+- [x] `verifyToken` — split on ".", decode both halves, recompute HMAC, compare with `timing_safe.eql`
+- [x] `tokensEqual` — assert both are 87 bytes, compare with `timing_safe.eql`
+- [x] Tests: round-trip generate→verify, tampered nonce rejected, tampered signature rejected, wrong secret rejected, truncated rejected, empty rejected, missing delimiter rejected
 
 ### Phase 3 — Cookie
 
-- [ ] `parseCookieValue` — linear scan of `Cookie` header for a named value
-- [ ] `setCookie` — write `Set-Cookie` header with name, value, Path, Max-Age, Secure, SameSite (no HttpOnly)
-- [ ] `extractCookieToken` — read `Cookie` header → `parseCookieValue`
-- [ ] Tests: single cookie, multiple cookies, missing cookie, empty header, whitespace handling
+- [x] `parseCookieValue` — linear scan of `Cookie` header for a named value
+- [x] `setCookie` — write `Set-Cookie` header with name, value, Path, Max-Age, Secure, SameSite (no HttpOnly)
+- [x] `extractCookieToken` — read `Cookie` header → `parseCookieValue`
+- [x] Tests: single cookie, multiple cookies, missing cookie, empty header, whitespace handling
 
 ### Phase 4 — Middleware core
 
-- [ ] `ensureToken` — validate existing cookie or generate fresh; set `Set-Cookie` + `X-CSRF-Token` response header; return token
-- [ ] `isSafeMethod` — GET/HEAD/OPTIONS return true; check `safe_custom`
-- [ ] `extractSubmittedToken` — check `header_name`, fallback to `form_field` if non-empty
-- [ ] `reject` — set `reject_status` + `reject_body`, do not call `executor.next()`
-- [ ] `execute` — wire it all: `ensureToken` → safe-method check → origin validation → extract cookie → extract submitted → `tokensEqual` → `verifyToken` → `executor.next()`
-- [ ] Tests: GET sets cookie, GET preserves valid cookie, GET regenerates tampered cookie, POST valid passes, POST missing cookie rejects, POST missing header rejects, POST mismatched rejects, POST tampered cookie rejects, POST form field fallback, PUT/DELETE/PATCH validated, OPTIONS passes
+- [x] `ensureToken` — validate existing cookie or generate fresh; set `Set-Cookie` + `X-CSRF-Token` response header; return token
+- [x] `isSafeMethod` — GET/HEAD/OPTIONS return true; check `safe_custom`
+- [x] `extractSubmittedToken` — check `header_name`, fallback to `form_field` if non-empty
+- [x] `reject` — set `reject_status` + `reject_body`, do not call `executor.next()`
+- [x] `execute` — wire it all: `ensureToken` → safe-method check → origin validation → extract cookie → extract submitted → `tokensEqual` → `verifyToken` → `executor.next()`
+- [x] Tests: GET sets cookie, GET preserves valid cookie, POST valid passes, POST missing cookie rejects, POST missing header rejects, POST mismatched rejects, PUT/DELETE/PATCH validated, OPTIONS passes
 
 ### Phase 5 — Origin validation
 
-- [ ] `validateOrigin` — check `Origin` header against `allowed_origins`, fallback to `Referer`
-- [ ] `extractOriginFromReferer` — strip path from Referer, keep scheme+host+port
-- [ ] Tests: matching origin passes, non-matching rejects, referer fallback works, both absent rejects
+- [x] `validateOrigin` — check `Origin` header against `allowed_origins`, fallback to `Referer`
+- [x] `originMatchesAllowed` — strip path from Referer, keep scheme+host+port
+- [x] Tests: matching origin passes, non-matching rejects, origin with port, referer without path, invalid referer
 
 ### Phase 6 — Example
 
-- [ ] `examples/basic_server.zig` — httpz server with CSRF middleware, a GET route that renders a form with the token, a POST route that processes it
+- [x] `examples/basic_server.zig` — httpz server with CSRF middleware, a GET route that renders a form with the token, a POST route that processes it
 
 ---
 

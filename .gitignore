@@ -1,6 +1,7 @@
 # Zig
 zig-out/
 .zig-cache/
+zig-pkg/
 
 # OS
 .DS_Store
