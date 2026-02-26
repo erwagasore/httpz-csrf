@@ -20,7 +20,7 @@ Add to `build.zig.zon`:
 
 ```zig
 .httpz_csrf = .{
-    .url = "git+https://github.com/erwagasore/httpz-csrf#main",
+    .url = "git+https://github.com/erwagasore/httpz-csrf#v0.1.1",
     .hash = "...",
 },
 ```

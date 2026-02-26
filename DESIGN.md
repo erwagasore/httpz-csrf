@@ -71,7 +71,7 @@ These were considered and intentionally dropped. Don't re-propose without new ev
 - **SHA-256 without key.** `SHA256(nonce)` is forgeable — attacker generates their own nonce and computes the hash. No authentication without a secret. Dropped.
 - **Per-request token rotation.** Breaks browser back button and multi-tab usage. Dropped.
 - **HttpOnly cookie.** Would prevent JavaScript from reading the token to submit in the `X-CSRF-Token` header. Breaks the core double-submit pattern. Dropped.
-- **Custom constant-time comparison.** `std.crypto.utils.timingSafeEql` exists in the stdlib for fixed-size arrays. Tokens are always 87 bytes. No reason to hand-roll. Dropped.
+- **Custom constant-time comparison.** `std.crypto.timing_safe.eql` exists in the stdlib for fixed-size arrays. Tokens are always 87 bytes. No reason to hand-roll. Dropped.
 - **Builder struct for token operations.** Wrapping config + token state in a builder hides allocation and adds a type. Idiomatic Zig passes data explicitly. Dropped.
 
 ---
@@ -121,7 +121,7 @@ Base64url encoding (RFC 4648 §5) is used — no `+`, `/`, or `=` characters. 33
                                               │  Extract cookie token │
                                               │  Extract header/form  │
                                               │  Compare (fixed-size  │
-                                              │    timingSafeEql)     │
+                                              │    timing_safe.eql)     │
                                               │  Verify HMAC sig      │
                                               └───────────┬───────────┘
                                                           │
@@ -135,8 +135,8 @@ Base64url encoding (RFC 4648 §5) is used — no `+`, `/`, or `=` characters. 33
 
 ### Key structural decisions
 
-- **`ensureToken` runs first, unconditionally.** One function, one path. It validates the existing cookie or generates a fresh token, sets the `Set-Cookie` header, and sets the `X-CSRF-Token` response header. No separate "ensure cookie" and "set response header" functions — that was a rejected split (overlap, hidden side effects).
-- **All comparisons use stdlib `timingSafeEql`.** Tokens are always 87 bytes; HMAC digests are always 32 bytes. Fixed-size comparison, no hand-rolled loops.
+- **Safe methods get tokens; unsafe methods only validate.** `extractValidCookieToken` checks the cookie; `provideToken` generates a fresh one if needed (safe methods only). Unsafe methods without a cookie are rejected immediately — no wasted allocation, no misleading `Set-Cookie` on a 403.
+- **All comparisons use stdlib `timing_safe.eql`.** Tokens are always 87 bytes; HMAC digests are always 32 bytes. Fixed-size comparison, no hand-rolled loops.
 
 ---
 
@@ -194,7 +194,7 @@ CSRF must run before auth and business logic — otherwise an attacker can trigg
 | Cross-site form submission | Token in header/form must match cookie; attacker cannot read cross-origin cookies |
 | Subdomain cookie injection | HMAC signature — attacker cannot forge a valid token without the secret |
 | Token theft via XSS | Out of scope — XSS breaks all CSRF defences; fix XSS separately |
-| Timing attack on comparison | `std.crypto.utils.timingSafeEql` for both token matching (87 bytes) and HMAC verification (32 bytes) |
+| Timing attack on comparison | `std.crypto.timing_safe.eql` for both token matching (87 bytes) and HMAC verification (32 bytes) |
 | BREACH compression attack | Random nonce per token — each token is unique, no compressible patterns |
 | Cookie tossing (subdomain) | `__Host-` prefix forces `Secure`, no `Domain`, `Path=/` — immune to tossing |
 | Replay of old tokens | Tokens are valid for `max_age` seconds; short TTL limits exposure window |
@@ -252,7 +252,7 @@ httpz-csrf/
 | [httpz](https://github.com/karlseguin/http.zig) | Middleware interface, request/response types, testing utilities |
 | `std.crypto.auth.hmac.sha256` | HMAC-SHA256 for token signing |
 | `std.crypto.random` | Cryptographic random bytes for nonce generation |
-| `std.crypto.utils` | `timingSafeEql` for constant-time comparison |
+| `std.crypto.timing_safe` | `timing_safe.eql` for constant-time comparison |
 | `std.base64` | Base64url encoding/decoding |
 
 No external dependencies beyond httpz. All crypto is Zig stdlib.
