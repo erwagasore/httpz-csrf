@@ -8,13 +8,18 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var server = try httpz.Server(void).init(allocator, .{ .port = PORT }, {});
+    var server = try httpz.Server(void).init(allocator, .{
+        .port = PORT,
+        .request = .{ .max_form_count = 16 },
+    }, {});
     defer server.deinit();
     defer server.stop();
 
+    // ⚠ DO NOT use a hardcoded secret in production — load from environment.
     const csrf = try server.middleware(Csrf, .{
         .secret = "this-is-a-dev-secret-at-least-32b!",
         .secure = false, // dev only — no HTTPS
+        .cookie_name = "csrf", // no __Host- prefix without Secure
     });
 
     var router = try server.router(.{ .middlewares = &.{csrf} });
@@ -42,8 +47,8 @@ fn getForm(_: *httpz.Request, res: *httpz.Response) !void {
 }
 
 fn postSubmit(req: *httpz.Request, res: *httpz.Response) !void {
-    const query = try req.query();
-    const message = query.get("message") orelse "(empty)";
+    const fd = try req.formData();
+    const message = fd.get("message") orelse "(empty)";
     res.content_type = .HTML;
     res.body = std.fmt.allocPrint(res.arena,
         \\<!DOCTYPE html>

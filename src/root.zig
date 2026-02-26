@@ -65,28 +65,38 @@ pub fn deinit(_: *@This()) void {}
 
 /// Middleware execution — called by httpz for each request.
 pub fn execute(self: *const @This(), req: *httpz.Request, res: *httpz.Response, executor: anytype) !void {
+    const is_safe = self.isSafeMethod(req.method);
+
     // 1. Ensure a valid token exists (cookie + response header).
-    const token = try self.ensureToken(req, res);
+    //    For safe methods: always generate if missing (sets cookie for the client).
+    //    For unsafe methods: only reuse existing valid cookie — don't generate a
+    //    new token that would waste an arena allocation and send a misleading
+    //    Set-Cookie on what will be a 403 response.
+    const cookie_token = self.extractValidCookieToken(req);
 
-    // 2. Safe methods — nothing to validate.
-    if (self.isSafeMethod(req.method)) return executor.next();
-
-    // 3. Origin validation (defence-in-depth, if configured).
-    if (self.config.allowed_origins) |origins| {
-        if (!self.validateOrigin(req, origins)) return self.reject(res);
+    if (is_safe) {
+        try self.provideToken(res, cookie_token);
+        return executor.next();
     }
 
-    // 4. Token must exist in cookie.
-    const cookie_token = token orelse return self.reject(res);
+    // --- Unsafe method: validate everything ---
 
-    // 5. Extract submitted token from header (fallback: form field).
+    // 2. Origin validation (defence-in-depth, if configured).
+    if (self.config.allowed_origins) |origins| {
+        if (!validateOrigin(req, origins)) return self.reject(res);
+    }
+
+    // 3. Token must exist in cookie.
+    const valid_cookie = cookie_token orelse return self.reject(res);
+
+    // 4. Extract submitted token from header (fallback: form field).
     const submitted_token = (try self.extractSubmittedToken(req)) orelse return self.reject(res);
 
-    // 6. Compare tokens (constant-time, fixed-size).
-    if (!tokensEqual(cookie_token, submitted_token)) return self.reject(res);
+    // 5. Compare tokens (constant-time, fixed-size).
+    if (!tokensEqual(valid_cookie, submitted_token)) return self.reject(res);
 
-    // 7. Verify HMAC signature.
-    if (!self.verifyToken(cookie_token)) return self.reject(res);
+    // 6. Verify HMAC signature.
+    if (!self.verifyToken(valid_cookie)) return self.reject(res);
 
     return executor.next();
 }
@@ -95,26 +105,28 @@ pub fn execute(self: *const @This(), req: *httpz.Request, res: *httpz.Response, 
 // Middleware helpers
 // ============================================================================
 
-/// Ensure a valid token exists. One function, one path:
-///   1. Valid cookie exists → reuse it, set response header, return slice.
-///   2. Otherwise → generate new token, set cookie + response header, return null.
-///
-/// Returns null when a fresh token was issued — callers cannot match against it
-/// because the client never saw it. This avoids returning a pointer to stack memory.
-fn ensureToken(self: *const @This(), req: *httpz.Request, res: *httpz.Response) !?[]const u8 {
-    if (self.extractCookieToken(req)) |existing| {
-        if (self.verifyToken(existing)) {
-            // existing points into the request's header buffer — stable for this request.
-            res.header("x-csrf-token", existing);
-            return existing;
-        }
+/// Extract the cookie token and verify its HMAC. Returns the slice into the
+/// request header buffer (stable for this request) or null.
+fn extractValidCookieToken(self: *const @This(), req: *httpz.Request) ?[]const u8 {
+    const existing = self.extractCookieToken(req) orelse return null;
+    if (self.verifyToken(existing)) return existing;
+    return null;
+}
+
+/// Set response headers (and cookie if needed) so the client has a valid token.
+/// Called only for safe methods. If a valid cookie already exists, reuse it;
+/// otherwise generate a fresh one.
+fn provideToken(self: *const @This(), res: *httpz.Response, existing: ?[]const u8) !void {
+    if (existing) |token| {
+        // existing points into the request's header buffer — stable for this request.
+        res.header("x-csrf-token", token);
+        return;
     }
-    // Stack-local token — must dupe into the response arena before passing to headers.
+    // Stack-local token — dupe into the response arena so the pointer outlives this frame.
     const token = self.generateToken();
     const duped = try res.arena.dupe(u8, &token);
-    self.setCookie(res, duped);
+    try self.setCookie(res, duped);
     res.header("x-csrf-token", duped);
-    return null;
 }
 
 fn isSafeMethod(self: *const @This(), method: httpz.Method) bool {
@@ -147,8 +159,7 @@ fn reject(self: *const @This(), res: *httpz.Response) void {
     res.body = self.config.reject_body;
 }
 
-fn validateOrigin(self: *const @This(), req: *httpz.Request, allowed: []const []const u8) bool {
-    _ = self;
+fn validateOrigin(req: *httpz.Request, allowed: []const []const u8) bool {
     const origin = req.header("origin") orelse {
         const referer = req.header("referer") orelse return false;
         return originMatchesAllowed(referer, allowed);
@@ -181,7 +192,6 @@ fn originMatchesAllowed(referer: []const u8, allowed: []const []const u8) bool {
 const token_len = 87; // 43 (nonce) + 1 (".") + 43 (signature)
 const nonce_len = 32;
 const encoded_nonce_len = 43;
-const encoded_sig_len = 43;
 
 /// Generate a signed CSRF token: base64url(random) "." base64url(hmac).
 fn generateToken(self: *const @This()) [token_len]u8 {
@@ -228,7 +238,7 @@ fn tokensEqual(a: []const u8, b: []const u8) bool {
 
 /// Parse a `Cookie` header to find a named value.
 /// Format: `name1=value1; name2=value2; name3=value3`
-pub fn parseCookieValue(header: []const u8, name: []const u8) ?[]const u8 {
+fn parseCookieValue(header: []const u8, name: []const u8) ?[]const u8 {
     var remaining = header;
     while (remaining.len > 0) {
         remaining = std.mem.trimLeft(u8, remaining, " ");
@@ -256,21 +266,18 @@ fn extractCookieToken(self: *const @This(), req: *httpz.Request) ?[]const u8 {
     return parseCookieValue(cookie_header, self.config.cookie_name);
 }
 
-/// Write a Set-Cookie header for the CSRF token.
-fn setCookie(self: *const @This(), res: *httpz.Response, token: []const u8) void {
-    const value = std.fmt.allocPrint(res.arena, "{s}={s}; Path={s}; Max-Age={d}; SameSite={s}{s}", .{
-        self.config.cookie_name,
-        token,
-        self.config.cookie_path,
-        self.config.max_age,
-        switch (self.config.same_site) {
-            .strict => "Strict",
-            .lax => "Lax",
-            .none => "None",
+/// Write a Set-Cookie header for the CSRF token using httpz's native cookie API.
+fn setCookie(self: *const @This(), res: *httpz.Response, token: []const u8) !void {
+    try res.setCookie(self.config.cookie_name, token, .{
+        .path = self.config.cookie_path,
+        .max_age = @intCast(self.config.max_age),
+        .secure = self.config.secure,
+        .same_site = switch (self.config.same_site) {
+            .strict => .strict,
+            .lax => .lax,
+            .none => .none,
         },
-        if (self.config.secure) "; Secure" else "",
-    }) catch return;
-    res.header("set-cookie", value);
+    });
 }
 
 // ============================================================================
@@ -455,7 +462,7 @@ test "middleware: GET sets CSRF cookie when none exists" {
 
     try testing.expect(exec.called);
     // Should have set-cookie and x-csrf-token headers.
-    try testing.expect(ht.res.headers.get("set-cookie") != null);
+    try testing.expect(ht.res.headers.get("Set-Cookie") != null);
     try testing.expect(ht.res.headers.get("x-csrf-token") != null);
 }
 
@@ -473,7 +480,7 @@ test "middleware: GET preserves existing valid cookie" {
 
     try testing.expect(exec.called);
     // Should NOT set a new cookie (token is valid).
-    try testing.expect(ht.res.headers.get("set-cookie") == null);
+    try testing.expect(ht.res.headers.get("Set-Cookie") == null);
     // Should still set the response header.
     try testing.expect(ht.res.headers.get("x-csrf-token") != null);
 }
@@ -631,6 +638,88 @@ test "middleware: POST with form field fallback passes" {
 }
 
 // -- Origin validation -------------------------------------------------------
+
+test "middleware: PATCH passes when listed in safe_custom" {
+    const safe_methods = [_]httpz.Method{.PATCH};
+    const mw: @This() = .{ .config = .{
+        .secret = test_secret,
+        .safe_custom = &safe_methods,
+    } };
+
+    var ht = initHt();
+    defer ht.deinit();
+    ht.req.method = .PATCH;
+    ht.url("/resource");
+
+    var exec = NoopExecutor{};
+    try mw.execute(ht.req, ht.res, &exec);
+
+    try testing.expect(exec.called);
+}
+
+test "middleware: POST rejected when origin not in allowed_origins" {
+    const allowed = [_][]const u8{"https://example.com"};
+    const mw: @This() = .{ .config = .{
+        .secret = test_secret,
+        .allowed_origins = &allowed,
+    } };
+    const token = mw.generateToken();
+
+    var ht = initHt();
+    defer ht.deinit();
+    ht.req.method = .POST;
+    ht.url("/submit");
+    ht.header("cookie", "__Host-csrf=" ++ &token);
+    ht.header("x-csrf-token", &token);
+    ht.header("origin", "https://evil.com");
+
+    var exec = NoopExecutor{};
+    try mw.execute(ht.req, ht.res, &exec);
+
+    try testing.expect(!exec.called);
+    try testing.expectEqual(@as(u16, 403), ht.res.status);
+}
+
+test "middleware: POST passes when origin matches allowed_origins" {
+    const allowed = [_][]const u8{"https://example.com"};
+    const mw: @This() = .{ .config = .{
+        .secret = test_secret,
+        .allowed_origins = &allowed,
+    } };
+    const token = mw.generateToken();
+
+    var ht = initHt();
+    defer ht.deinit();
+    ht.req.method = .POST;
+    ht.url("/submit");
+    ht.header("cookie", "__Host-csrf=" ++ &token);
+    ht.header("x-csrf-token", &token);
+    ht.header("origin", "https://example.com");
+
+    var exec = NoopExecutor{};
+    try mw.execute(ht.req, ht.res, &exec);
+
+    try testing.expect(exec.called);
+}
+
+test "middleware: unsafe method without cookie rejects without setting Set-Cookie" {
+    const mw = testInstance();
+
+    var ht = initHt();
+    defer ht.deinit();
+    ht.req.method = .POST;
+    ht.url("/submit");
+
+    var exec = NoopExecutor{};
+    try mw.execute(ht.req, ht.res, &exec);
+
+    try testing.expect(!exec.called);
+    try testing.expectEqual(@as(u16, 403), ht.res.status);
+    // Should NOT set a cookie on a rejected unsafe request.
+    try testing.expect(ht.res.headers.get("Set-Cookie") == null);
+}
+
+// -- Origin validation (unit) ------------------------------------------------
 
 test "originMatchesAllowed: matching origin" {
     const allowed = [_][]const u8{"https://example.com"};
