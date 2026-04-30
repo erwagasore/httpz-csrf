@@ -84,7 +84,7 @@ base64url(random_bytes) "." base64url(hmac_sha256(random_bytes, secret))
 
 | Component | Size | Description |
 |-----------|------|-------------|
-| `random_bytes` | 32 bytes (43 base64url chars) | Cryptographically random nonce from `std.crypto.random` |
+| `random_bytes` | 32 bytes (43 base64url chars) | Cryptographically random nonce from Zig 0.16 `std.Io.randomSecure` |
 | `"."` | 1 byte | Delimiter separating nonce from signature |
 | `hmac_signature` | 32 bytes (43 base64url chars) | HMAC-SHA256 of the raw random bytes keyed with the server secret |
 
@@ -118,11 +118,11 @@ Base64url encoding (RFC 4648 §5) is used — no `+`, `/`, or `=` characters. 33
          ▼                                                 ▼
     Pass through                              ┌───────────────────────┐
                                               │  Origin check (opt.)  │
-                                              │  Extract cookie token │
+                                              │  Extract + verify     │
+                                              │    cookie token       │
                                               │  Extract header/form  │
                                               │  Compare (fixed-size  │
                                               │    timing_safe.eql)     │
-                                              │  Verify HMAC sig      │
                                               └───────────┬───────────┘
                                                           │
                                               ┌───────────┴───────────┐
@@ -145,8 +145,9 @@ Base64url encoding (RFC 4648 §5) is used — no `+`, `/`, or `=` characters. 33
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
 | `secret` | `[]const u8` | **required** | HMAC key, ≥ 32 bytes. Validated at `init` — fail fast |
+| `io` | `std.Io` | **required** | Zig 0.16 I/O interface used for `randomSecure` token entropy |
 | `cookie_name` | `[]const u8` | `__Host-csrf` | `__Host-` prefix for maximum cookie security |
-| `header_name` | `[]const u8` | `x-csrf-token` | Request header carrying the submitted token |
+| `header_name` | `[]const u8` | `x-csrf-token` | Response/request header carrying the token |
 | `form_field` | `[]const u8` | `_csrf` | Form field fallback (empty string disables) |
 | `max_age` | `u32` | `7200` | Cookie TTL in seconds |
 | `cookie_path` | `[]const u8` | `/` | Cookie path attribute |
@@ -251,7 +252,7 @@ httpz-csrf/
 |------------|---------|
 | [httpz](https://github.com/karlseguin/http.zig) | Middleware interface, request/response types, testing utilities |
 | `std.crypto.auth.hmac.sha256` | HMAC-SHA256 for token signing |
-| `std.crypto.random` | Cryptographic random bytes for nonce generation |
+| `std.Io.randomSecure` | Cryptographic random bytes for nonce generation |
 | `std.crypto.timing_safe` | `timing_safe.eql` for constant-time comparison |
 | `std.base64` | Base64url encoding/decoding |
 
@@ -272,7 +273,7 @@ No external dependencies beyond httpz. All crypto is Zig stdlib.
 
 - [x] `generateToken` — 32 random bytes → HMAC-SHA256 → base64url nonce + "." + base64url signature → `[87]u8`
 - [x] `verifyToken` — split on ".", decode both halves, recompute HMAC, compare with `timing_safe.eql`
-- [x] `tokensEqual` — assert both are 87 bytes, compare with `timing_safe.eql`
+- [x] `tokensEqual` — assert both are 87 bytes, compare with `timing_safe.eql`; unsafe requests reuse the already-verified cookie token to avoid duplicate HMAC work
 - [x] Tests: round-trip generate→verify, tampered nonce rejected, tampered signature rejected, wrong secret rejected, truncated rejected, empty rejected, missing delimiter rejected
 
 ### Phase 3 — Cookie
