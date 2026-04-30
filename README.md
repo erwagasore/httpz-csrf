@@ -4,6 +4,8 @@ CSRF protection middleware for [httpz](https://github.com/karlseguin/http.zig).
 
 Stateless Signed Double-Submit Cookie pattern powered by HMAC-SHA256. No session storage required.
 
+Targets Zig 0.16.x and the Zig 0.16-compatible httpz API.
+
 ## Quickstart
 
 ```bash
@@ -20,7 +22,7 @@ Add to `build.zig.zon`:
 
 ```zig
 .httpz_csrf = .{
-    .url = "git+https://github.com/erwagasore/httpz-csrf#v0.1.2",
+    .url = "git+https://github.com/erwagasore/httpz-csrf#main", // or a Zig 0.16-compatible release tag
     .hash = "...",
 },
 ```
@@ -39,16 +41,18 @@ const std = @import("std");
 const httpz = @import("httpz");
 const Csrf = @import("httpz_csrf");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    var server = try httpz.Server(void).init(allocator, .{ .port = 8080 }, {});
-    defer server.deinit();
-    defer server.stop();
+    var server = try httpz.Server(void).init(init.io, allocator, .{ .address = .localhost(8080) }, {});
+    defer {
+        server.stop();
+        server.deinit();
+    }
 
     const csrf = try server.middleware(Csrf, .{
-        .secret = std.posix.getenv("CSRF_SECRET") orelse return error.MissingSecret,
+        .secret = init.environ_map.get("CSRF_SECRET") orelse return error.MissingSecret,
+        .io = init.io,
     });
 
     var router = try server.router(.{ .middlewares = &.{csrf} });
@@ -64,8 +68,9 @@ pub fn main() !void {
 ```zig
 const csrf = try server.middleware(Csrf, .{
     .secret = loadSecret(),
+    .io = init.io,                  // Zig 0.16 I/O interface for secure entropy
     .cookie_name = "__Host-csrf",   // Cookie name (default)
-    .header_name = "x-csrf-token",  // Request header name (default)
+    .header_name = "x-csrf-token",  // Response/request header name (default)
     .form_field = "_csrf",          // Form field fallback (default)
     .max_age = 7200,                // Cookie TTL in seconds (default: 2h)
     .secure = true,                 // Secure flag (default)
@@ -77,7 +82,7 @@ const csrf = try server.middleware(Csrf, .{
 
 ## Client flow
 
-The middleware requires a valid CSRF cookie **before** it will accept a state-changing request. On the first GET, the middleware sets the cookie and the `X-CSRF-Token` response header. The client must include this token on subsequent POST/PUT/PATCH/DELETE requests — either via the `x-csrf-token` header or a `_csrf` form field.
+The middleware requires a valid CSRF cookie **before** it will accept a state-changing request. On the first GET, the middleware sets the cookie and the configured CSRF response header (`x-csrf-token` by default). The client must include this token on subsequent POST/PUT/PATCH/DELETE requests — either via the configured request header or a `_csrf` form field.
 
 A POST without a prior GET will always receive a 403. This is by design: the client has no cookie yet, so no token can match. The expected integration pattern is:
 

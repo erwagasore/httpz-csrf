@@ -13,10 +13,13 @@ pub const Config = struct {
     /// HMAC secret key. Must be at least 32 bytes.
     secret: []const u8,
 
+    /// Zig 0.16 I/O interface used for cryptographically secure token entropy.
+    io: std.Io,
+
     /// Cookie name for the CSRF token.
     cookie_name: []const u8 = "__Host-csrf",
 
-    /// Request header carrying the submitted token.
+    /// Header used to provide the token on safe responses and receive it on unsafe requests.
     header_name: []const u8 = "x-csrf-token",
 
     /// Form field fallback. Empty string disables.
@@ -67,36 +70,30 @@ pub fn deinit(_: *@This()) void {}
 pub fn execute(self: *const @This(), req: *httpz.Request, res: *httpz.Response, executor: anytype) !void {
     const is_safe = self.isSafeMethod(req.method);
 
-    // 1. Ensure a valid token exists (cookie + response header).
-    //    For safe methods: always generate if missing (sets cookie for the client).
-    //    For unsafe methods: only reuse existing valid cookie — don't generate a
-    //    new token that would waste an arena allocation and send a misleading
-    //    Set-Cookie on what will be a 403 response.
-    const cookie_token = self.extractValidCookieToken(req);
-
+    // Safe methods provide a token to bootstrap clients. Unsafe methods validate only;
+    // they never mint a token for a request that may be rejected.
     if (is_safe) {
+        const cookie_token = self.extractValidCookieToken(req);
         try self.provideToken(res, cookie_token);
         return executor.next();
     }
 
     // --- Unsafe method: validate everything ---
 
-    // 2. Origin validation (defence-in-depth, if configured).
+    // 1. Origin validation (defence-in-depth, if configured). Do this before HMAC
+    //    work so obvious cross-origin rejects are cheap.
     if (self.config.allowed_origins) |origins| {
         if (!validateOrigin(req, origins)) return self.reject(res);
     }
 
-    // 3. Token must exist in cookie.
-    const valid_cookie = cookie_token orelse return self.reject(res);
+    // 2. Token must exist in cookie and have a valid HMAC signature.
+    const valid_cookie = self.extractValidCookieToken(req) orelse return self.reject(res);
 
-    // 4. Extract submitted token from header (fallback: form field).
+    // 3. Extract submitted token from header (fallback: form field).
     const submitted_token = (try self.extractSubmittedToken(req)) orelse return self.reject(res);
 
-    // 5. Compare tokens (constant-time, fixed-size).
+    // 4. Compare tokens (constant-time, fixed-size). valid_cookie was already HMAC-verified.
     if (!tokensEqual(valid_cookie, submitted_token)) return self.reject(res);
-
-    // 6. Verify HMAC signature.
-    if (!self.verifyToken(valid_cookie)) return self.reject(res);
 
     return executor.next();
 }
@@ -119,14 +116,14 @@ fn extractValidCookieToken(self: *const @This(), req: *httpz.Request) ?[]const u
 fn provideToken(self: *const @This(), res: *httpz.Response, existing: ?[]const u8) !void {
     if (existing) |token| {
         // existing points into the request's header buffer — stable for this request.
-        res.header("x-csrf-token", token);
+        res.header(self.config.header_name, token);
         return;
     }
     // Stack-local token — dupe into the response arena so the pointer outlives this frame.
-    const token = self.generateToken();
+    const token = try self.generateToken();
     const duped = try res.arena.dupe(u8, &token);
     try self.setCookie(res, duped);
-    res.header("x-csrf-token", duped);
+    res.header(self.config.header_name, duped);
 }
 
 fn isSafeMethod(self: *const @This(), method: httpz.Method) bool {
@@ -194,9 +191,9 @@ const nonce_len = 32;
 const encoded_nonce_len = 43;
 
 /// Generate a signed CSRF token: base64url(random) "." base64url(hmac).
-fn generateToken(self: *const @This()) [token_len]u8 {
+fn generateToken(self: *const @This()) ![token_len]u8 {
     var random_bytes: [nonce_len]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
+    try self.config.io.randomSecure(&random_bytes);
 
     var sig: [HmacSha256.mac_length]u8 = undefined;
     HmacSha256.create(&sig, &random_bytes, self.config.secret);
@@ -241,10 +238,10 @@ fn tokensEqual(a: []const u8, b: []const u8) bool {
 fn parseCookieValue(header: []const u8, name: []const u8) ?[]const u8 {
     var remaining = header;
     while (remaining.len > 0) {
-        remaining = std.mem.trimLeft(u8, remaining, " ");
+        remaining = std.mem.trimStart(u8, remaining, " ");
 
         const eq_pos = std.mem.indexOf(u8, remaining, "=") orelse return null;
-        const cookie_name = std.mem.trimRight(u8, remaining[0..eq_pos], " ");
+        const cookie_name = std.mem.trimEnd(u8, remaining[0..eq_pos], " ");
 
         remaining = remaining[eq_pos + 1 ..];
 
@@ -289,7 +286,7 @@ const testing = std.testing;
 const test_secret = "test-secret-key-that-is-at-least-32-bytes!!";
 
 fn testInstance() @This() {
-    return .{ .config = .{ .secret = test_secret } };
+    return .{ .config = .{ .secret = test_secret, .io = std.testing.io } };
 }
 
 // -- init validation ---------------------------------------------------------
@@ -297,12 +294,13 @@ fn testInstance() @This() {
 const dummy_mc: httpz.MiddlewareConfig = .{ .arena = undefined, .allocator = undefined };
 
 test "init: rejects secret shorter than 32 bytes" {
-    try testing.expectError(error.SecretTooShort, @This().init(.{ .secret = "too-short" }, dummy_mc));
+    try testing.expectError(error.SecretTooShort, @This().init(.{ .secret = "too-short", .io = std.testing.io }, dummy_mc));
 }
 
 test "init: rejects __Host- with secure=false" {
     try testing.expectError(error.HostPrefixRequiresSecure, @This().init(.{
         .secret = test_secret,
+        .io = std.testing.io,
         .cookie_name = "__Host-csrf",
         .secure = false,
     }, dummy_mc));
@@ -311,6 +309,7 @@ test "init: rejects __Host- with secure=false" {
 test "init: rejects __Host- with non-root path" {
     try testing.expectError(error.HostPrefixRequiresRootPath, @This().init(.{
         .secret = test_secret,
+        .io = std.testing.io,
         .cookie_name = "__Host-csrf",
         .cookie_path = "/api",
     }, dummy_mc));
@@ -319,6 +318,7 @@ test "init: rejects __Host- with non-root path" {
 test "init: allows non-__Host- cookie without Secure" {
     const mw = try @This().init(.{
         .secret = test_secret,
+        .io = std.testing.io,
         .cookie_name = "csrf",
         .secure = false,
     }, dummy_mc);
@@ -329,15 +329,15 @@ test "init: allows non-__Host- cookie without Secure" {
 
 test "generateToken: produces 87-char token with delimiter" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
     try testing.expectEqual(@as(usize, token_len), token.len);
     try testing.expectEqual(@as(u8, '.'), token[encoded_nonce_len]);
 }
 
 test "generateToken: unique on each call" {
     const mw = testInstance();
-    const a = mw.generateToken();
-    const b = mw.generateToken();
+    const a = try mw.generateToken();
+    const b = try mw.generateToken();
     try testing.expect(!std.mem.eql(u8, &a, &b));
 }
 
@@ -345,35 +345,38 @@ test "generateToken: unique on each call" {
 
 test "verifyToken: valid token passes" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
     try testing.expect(mw.verifyToken(&token));
 }
 
 test "verifyToken: rejects tampered nonce" {
     const mw = testInstance();
-    var token = mw.generateToken();
+    var token = try mw.generateToken();
     token[0] ^= 0xFF;
     try testing.expect(!mw.verifyToken(&token));
 }
 
 test "verifyToken: rejects tampered signature" {
     const mw = testInstance();
-    var token = mw.generateToken();
+    var token = try mw.generateToken();
     token[token_len - 1] ^= 0xFF;
     try testing.expect(!mw.verifyToken(&token));
 }
 
 test "verifyToken: rejects wrong secret" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
 
-    const other: @This() = .{ .config = .{ .secret = "different-secret-also-at-least-32-bytes!" } };
+    const other: @This() = .{ .config = .{
+        .secret = "different-secret-also-at-least-32-bytes!",
+        .io = std.testing.io,
+    } };
     try testing.expect(!other.verifyToken(&token));
 }
 
 test "verifyToken: rejects truncated token" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
     try testing.expect(!mw.verifyToken(token[0..50]));
 }
 
@@ -384,7 +387,7 @@ test "verifyToken: rejects empty string" {
 
 test "verifyToken: rejects missing delimiter" {
     const mw = testInstance();
-    var token = mw.generateToken();
+    var token = try mw.generateToken();
     token[encoded_nonce_len] = 'X';
     try testing.expect(!mw.verifyToken(&token));
 }
@@ -393,14 +396,14 @@ test "verifyToken: rejects missing delimiter" {
 
 test "tokensEqual: equal 87-byte tokens" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
     try testing.expect(tokensEqual(&token, &token));
 }
 
 test "tokensEqual: unequal 87-byte tokens" {
     const mw = testInstance();
-    const a = mw.generateToken();
-    const b = mw.generateToken();
+    const a = try mw.generateToken();
+    const b = try mw.generateToken();
     try testing.expect(!tokensEqual(&a, &b));
 }
 
@@ -468,7 +471,7 @@ test "middleware: GET sets CSRF cookie when none exists" {
 
 test "middleware: GET preserves existing valid cookie" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
 
     var ht = initHt();
     defer ht.deinit();
@@ -485,9 +488,28 @@ test "middleware: GET preserves existing valid cookie" {
     try testing.expect(ht.res.headers.get("x-csrf-token") != null);
 }
 
+test "middleware: GET uses configured response header name" {
+    const mw: @This() = .{ .config = .{
+        .secret = test_secret,
+        .io = std.testing.io,
+        .header_name = "x-custom-csrf",
+    } };
+
+    var ht = initHt();
+    defer ht.deinit();
+    ht.url("/");
+
+    var exec = NoopExecutor{};
+    try mw.execute(ht.req, ht.res, &exec);
+
+    try testing.expect(exec.called);
+    try testing.expect(ht.res.headers.get("x-custom-csrf") != null);
+    try testing.expect(ht.res.headers.get("x-csrf-token") == null);
+}
+
 test "middleware: POST with valid token passes" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
 
     var ht = initHt();
     defer ht.deinit();
@@ -519,7 +541,7 @@ test "middleware: POST with missing cookie rejects" {
 
 test "middleware: POST with missing header rejects" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
 
     var ht = initHt();
     defer ht.deinit();
@@ -536,8 +558,8 @@ test "middleware: POST with missing header rejects" {
 
 test "middleware: POST with mismatched tokens rejects" {
     const mw = testInstance();
-    const token_a = mw.generateToken();
-    const token_b = mw.generateToken();
+    const token_a = try mw.generateToken();
+    const token_b = try mw.generateToken();
 
     var ht = initHt();
     defer ht.deinit();
@@ -614,7 +636,7 @@ test "middleware: OPTIONS passes without token" {
 
 test "middleware: POST with form field fallback passes" {
     const mw = testInstance();
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
 
     var ht = initHtWithForm();
     defer ht.deinit();
@@ -643,6 +665,7 @@ test "middleware: PATCH passes when listed in safe_custom" {
     const safe_methods = [_]httpz.Method{.PATCH};
     const mw: @This() = .{ .config = .{
         .secret = test_secret,
+        .io = std.testing.io,
         .safe_custom = &safe_methods,
     } };
 
@@ -661,9 +684,10 @@ test "middleware: POST rejected when origin not in allowed_origins" {
     const allowed = [_][]const u8{"https://example.com"};
     const mw: @This() = .{ .config = .{
         .secret = test_secret,
+        .io = std.testing.io,
         .allowed_origins = &allowed,
     } };
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
 
     var ht = initHt();
     defer ht.deinit();
@@ -684,9 +708,10 @@ test "middleware: POST passes when origin matches allowed_origins" {
     const allowed = [_][]const u8{"https://example.com"};
     const mw: @This() = .{ .config = .{
         .secret = test_secret,
+        .io = std.testing.io,
         .allowed_origins = &allowed,
     } };
-    const token = mw.generateToken();
+    const token = try mw.generateToken();
 
     var ht = initHt();
     defer ht.deinit();

@@ -30,14 +30,17 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 
 | Path | Description |
 |------|-------------|
-| `src/root.zig` | Middleware implementation — config, execute, token gen/verify, cookie handling |
-| `examples/basic_server.zig` | Runnable example server with CSRF-protected routes |
+| `src/root.zig` | Single-file middleware — Config, execute, token gen/verify, cookie, origin validation (42 tests) |
+| `examples/basic_server.zig` | Runnable demo — CSRF-protected form with GET + POST routes |
 | `build.zig` | Build system — library module, example executable, test step |
-| `build.zig.zon` | Package manifest with httpz dependency |
-| `DESIGN.md` | Architecture and principles (token format, threat model, design decisions) |
-| `docs/index.md` | Documentation index with links to all project docs |
-| `CHANGELOG.md` | Release history |
-| `LICENSE` | MIT licence |
+| `build.zig.zon` | Package manifest (Zig 0.16.0, httpz dependency) |
+| `DESIGN.md` | Architecture — token format, threat model, request flow, rejected alternatives, implementation checklist |
+| `README.md` | Usage, configuration, client flow, dependency setup |
+| `AGENTS.md` | This file — operating rules, repo map, orientation |
+| `docs/index.md` | Documentation index |
+| `CHANGELOG.md` | Release history (semver, conventional commits) |
+| `LICENSE` | MIT |
+| `.gitignore` | Ignores zig-out/, .zig-cache/, zig-pkg/ |
 
 ## Merge strategy
 
@@ -53,6 +56,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## Orientation
 
-- **Entry point**: `src/root.zig` — single-file middleware implementation.
+- **Entry point**: `src/root.zig` — single-file middleware (42 tests inline).
 - **Domain**: Stateless CSRF protection middleware for the Zig [httpz](https://github.com/karlseguin/http.zig) framework. Signed Double-Submit Cookie pattern with HMAC-SHA256.
-- **Stack**: Zig 0.15+, httpz.
+- **Stack**: Zig 0.16.x, httpz.
+- **Current version**: 0.1.2.
