@@ -22,7 +22,7 @@ Add to `build.zig.zon`:
 
 ```zig
 .httpz_csrf = .{
-    .url = "git+https://github.com/erwagasore/httpz-csrf#main", // or a Zig 0.16-compatible release tag
+    .url = "git+https://github.com/erwagasore/httpz-csrf#v1.0.0",
     .hash = "...",
 },
 ```

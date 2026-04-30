@@ -59,4 +59,4 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 - **Entry point**: `src/root.zig` — single-file middleware (42 tests inline).
 - **Domain**: Stateless CSRF protection middleware for the Zig [httpz](https://github.com/karlseguin/http.zig) framework. Signed Double-Submit Cookie pattern with HMAC-SHA256.
 - **Stack**: Zig 0.16.x, httpz.
-- **Current version**: 0.1.2.
+- **Current version**: 1.0.0.

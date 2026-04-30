@@ -2,22 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.0.0] — 2026-04-30
 
 ### Breaking Changes
 
 - Require Zig 0.16.x and the Zig 0.16-compatible httpz API
-- Require `Config.io: std.Io` so token generation uses Zig 0.16 `std.Io.randomSecure`
+- Require `Config.io: std.Io` so CSRF token generation uses Zig 0.16 `std.Io.randomSecure`
 
-### Changed
+### Features
+
+- Upgrade the middleware, example server, and documentation to Zig 0.16
+- Use the configured CSRF header name for both response and request token headers
+
+### Other
 
 - Pin httpz to a Zig 0.16-compatible commit
-- Update the example server and README to use `std.process.Init`, `init.gpa`, `init.io`, and `Config.address`
-- Replace removed Zig 0.15 APIs (`std.crypto.random`, `std.mem.trimLeft`, `std.mem.trimRight`) with Zig 0.16 APIs
-- Use the configured CSRF header name for both safe-method responses and unsafe-method validation
-- Avoid duplicate HMAC verification on unsafe requests after the cookie token has already been verified
-- Run optional Origin/Referer validation before cookie HMAC work on unsafe requests for cheaper rejects
-- Propagate example response allocation failures with `try` instead of silently returning
+- Replace removed Zig 0.15 APIs with Zig 0.16 equivalents
+- Avoid duplicate HMAC verification on unsafe requests
+- Run optional Origin/Referer validation before cookie HMAC work on unsafe requests
+- Propagate example response allocation failures with `try`
 
 ## [0.1.2] — 2026-02-25
 
